@@ -1,0 +1,1 @@
+("8.15" tarm64osx ("d73586d499a4123e3a5a2308f2dd54464a21bb62" . "8c2df3feb72172aef73bbc7e826837343b3eb2e7") #"/Users/hglabplh/Documents/Documents - MacBook Air von Harald/Codex/2026-08-08/SCMObjLibR6RS/objectfactory.scm" (collects #"drracket" #"private" #"drracket-errortrace-key.rkt") (collects #"mzscheme" #"main.rkt"))

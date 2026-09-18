@@ -1,0 +1,585 @@
+(require "./globaldefs/stackdef.ss") 
+(require rnrs/mutable-pairs-6)   
+;;(require rnrs/lists-6)
+
+
+(define  copy-list (lambda (li)
+                     (if (eq? li '()) 
+                         '()
+                         (let ((ele (list (car li))))
+                           (append ele (copy-list (cdr li)))))))
+
+(define make-register (lambda (name)
+                        (let ((regvalue 0) (name name))
+                          (letrec
+                              ((getname (lambda() name))
+                               (setreg! (lambda(value) (set! regvalue value)))
+                               (getreg (lambda() regvalue)))
+                            (vector getname setreg! getreg)))))
+
+(define regname (lambda (register)
+                  ((vector-ref register 0))))
+
+(define regset! (lambda (register value)
+                  ((vector-ref register 1) value)))
+
+(define regget (lambda (register)
+                 ((vector-ref register 2))))
+
+(define make-registry (lambda () 
+                        (let ((reglist
+                               (list
+                                (list 'flags (make-register 'flags))
+                                (list 'pc (make-register 'pc)))))
+                          (letrec
+                              ((add (lambda (register)
+                                      (if (eq? (massoc (regname register) reglist) #f)
+                                          (set! reglist (cons (list (regname register) register) reglist)))))
+                               (alloc (lambda (name)
+                                        (if (eq? (assoc name reglist) #f)
+                                            (set! reglist
+                                                  (cons (list name (make-register name)) reglist))
+                                            #f)
+                                        name))
+                               (get (lambda (regname) (let ((result (assoc regname reglist))) 
+                                                        (if (eq? result #f)
+                                                            (get(alloc regname))
+                                                            (cadr result)))))
+                               (mov  (lambda (source target)
+                                       (let ((rsource (get source)) 
+                                             (rtarget (get target)))
+                                         (regset! rtarget (regget rsource))
+                                         (regget rtarget))))
+                               (swap  (lambda (source target)
+                                        (let* ((rsource (get source)) 
+                                               (rtarget (get target))
+                                               (trgval (regget rtarget)))
+                                          (regset! rtarget (regget rsource))
+                                          (regset!  rsource trgval)
+                                          (regget target)))))
+                            (vector add alloc get mov swap)))))
+
+(define registryadd (lambda (registry register)
+                      ((vector-ref registry 0) register)))
+(define registryalloc (lambda (registry register)
+                        ((vector-ref registry 1) register)))
+(define registryget (lambda (registry regname)
+                      ((vector-ref registry 2) regname)))
+(define all-listmembers-type (lambda (predicate? list)
+                               (if (null? list)
+                                   #f
+                                   (letrec ((inner
+                                             (lambda (lst)
+                                               (cond ((null? lst) #t)
+                                                     ((not (predicate? (car lst))) #f)
+                                                     (else (inner (cdr lst)))))))
+                                     (inner list)))))
+
+(define make-blankmachine (lambda ()
+                            (let ((operations  (list(list 'init-stack stack-init)))
+                                  (stack (make-stack 'machine-stack))                                                      
+                                  (registers (make-registry)))                                       
+                              (stack-init stack)
+                              (letrec
+                                  ((initregs
+                                    (lambda(reglist)
+                                      (map (vector-ref registers 1) reglist)))                                
+                                   (executor
+                                    (lambda(instructions)
+                                      (let ((flags (getregister 'flags))
+                                            (pc (getregister 'pc)))
+                                        (letrec ((loop (lambda()
+                                                         (let ((insts (get-instructions instructions pc)))
+                                                           (if (null? insts)
+                                                               (regset! flags 'exit)
+                                                               (display (execute-instruction insts)))
+                                                           (if (not (eq? (regget flags) 'exit))
+                                                               (loop))))))(loop)))))
+                                   (initops (lambda(ops) (set! operations (append operations ops))))
+                                   (getops (lambda() operations))
+                                   (getstack (lambda () stack))
+                                   (getregister (lambda(name) (registryget registers name))))
+                                (vector initregs initops getregister getstack executor getops)))))
+
+
+(define get-instructions (lambda (instructions pc)
+                           (if (eq? (regget pc) 0)
+                               (regset! pc instructions))
+                           (regget pc)))
+
+(define execute-instruction
+  (lambda (inst)
+    (let ((proc (cdr (car inst))))
+      (display proc)
+      (if (procedure? proc)
+          (proc)))))
+
+(define get-register (lambda (machine regname) ((vector-ref machine 2) regname)))
+(define get-stack (lambda (machine) ((vector-ref machine 3))))
+(define inst-execute (lambda (machine instructions) ((vector-ref machine 4) instructions)))
+(define newmachine (make-blankmachine))
+((vector-ref newmachine 0) '(bx cx dx rcont renv envp rvars rcode rstate rprocs))
+((vector-ref newmachine 1) (list (list 'plus +)
+                                 (list 'mset vector-set!)
+                                 (list 'mget vector-ref)
+                                 (list 'malloc make-vector)
+                                 (list 'minus -)
+                                 (list 'eq eq?)
+                                 (list 'higher >)
+                                 (list 'lower <)))
+(regset! ((vector-ref newmachine 2) 'pc) 0)
+(regset! ((vector-ref newmachine 2) 'rcont) 0)
+(regset! ((vector-ref newmachine 2) 'renv) 0)
+((stack-push! ((vector-ref newmachine 3))) 78)
+((stack-pop ((vector-ref newmachine 3))))
+(regset! (get-register newmachine 'dx) 12)
+(regget (get-register newmachine 'dx))
+(regset! (get-register newmachine 'ax) 128)
+(regget (get-register newmachine 'ax))
+;; new code replacing old instruction logic
+
+;; now lets have a look on doing the stuff with lists like
+
+(define toassmble (copy-list '(main (test (op eq) (reg ax) (reg cx)) 
+                         (push! (reg ax))
+                         (push! (op plus) (cons 2) (cons 7))
+                         (pop dx)
+                         (pop cx)
+                         (assign renv (op malloc) (cons 200))
+                         (assign dx (op plus) (reg ax) (reg dx))
+                         (branchcond #f (label test))
+                         (branch (label try))
+                         test (move ax (reg dx))
+                         (perform (op mset) (regrenv) (reg envp) (reg rcont))
+                         (assign rcont (op mget) (reg renv) (reg envp))
+                         try  (test (op eq) (reg cx) (reg dx))
+                         (continue))))
+
+(define make-instruction (lambda (stmt)
+                           (cons stmt '())))
+(define make-label-entry (lambda (label instructions)
+                           (cons label instructions)))
+
+(define generatecode(lambda (instructions labels machine) 
+                      (let ((pc ((vector-ref machine 2) 'pc))
+                            (stack ((vector-ref newmachine 3)))
+                            (flags ((vector-ref machine 2) 'flags))
+                            (operations ((vector-ref newmachine 5))))
+                        (for-each
+                         (lambda (element)                        
+                           (set-exec-instruction! 
+                            element
+                            (make-exec-instruction 
+                             (instruction-text element) 
+                             machine pc flags operations labels))) 
+                         instructions) instructions)));; make it like link loading, copy the stuff instead of set-cdr
+
+(define set-exec-instruction! (lambda(instruction proc)
+                                (set-cdr! instruction proc)
+                                (display instruction)(newline)))
+(define (instruction-text inst)
+  (car inst))
+
+(define make-exec-instruction 
+  (lambda(instruction machine pc flags operations labels)
+    (cond ((eq? (car instruction) 'test)
+           (make-test-inst instruction machine pc flags operations labels))
+          ((eq? (car instruction) 'branch)
+           (make-branch-inst instruction machine pc flags operations labels))
+          ((eq? (car instruction) 'branchcond)
+           (make-branchcond-inst instruction machine pc flags operations labels))
+          ((eq? (car instruction) 'continue)
+           (make-continue-inst instruction machine pc flags operations labels))
+          ((eq? (car instruction) 'assign)
+           (make-assign-inst instruction machine pc flags operations labels))
+          ((eq? (car instruction) 'push!)
+           (make-push!-inst instruction machine pc flags operations labels))
+          ((eq? (car instruction) 'pop) 
+           (make-pop-inst instruction machine pc flags operations labels))
+          ((eq? (car instruction) 'perform)
+           (make-perform-inst instruction machine pc flags operations labels))
+          (else (lambda () (newline)(display (car instruction))(newline)(advance-pc pc) instruction)))))
+
+
+
+(define op-error (lambda (opt text pc flags)
+                   (display text)
+                   (lambda()
+                     (display text)
+                     (advance-pc pc) 
+                     (if (eq? 'severe opt)
+                         (regset! flags 'exit)))))
+
+(define make-test-inst
+  (lambda(instruction machine pc flags operations labels)
+    (display 'make-test)
+    (let ((instname (car instruction))
+          (params (cdr instruction)))
+      (if (operation-exp? (car params))
+          (let ((condproc (make-operation params operations machine labels)))
+            (lambda ()               
+              (regset! flags (condproc))
+              (display (regget flags))
+              (advance-pc pc)))
+          (op-error 'severe "Error in test ASSEMBLE no condition" pc flags)))))
+
+(define branch-seq
+  (lambda (pc rcont brproc)
+    (regset! rcont (cdr (regget pc)))
+    (regset! pc (brproc))))
+
+(define make-branch-inst
+  (lambda(instruction machine pc flags operations labels)
+    (display 'make-branch)
+    (let ((instname (car instruction))
+          (params (cdr instruction)))
+      (if (or (label-exp? (car params)) (register-exp? (car params)))
+          (let ((brproc (make-primitive-exp (car params) machine labels))
+                (rcont (get-register machine 'rcont)))
+            (if brproc
+                (lambda ()
+                  (branch-seq pc rcont brproc)
+                  (newline)
+                  (display 'rcont->)(display (regget rcont)) 
+                  (newline)
+                  (display "branch pc->")
+                  (display (regget pc)))
+                (op-error 'severe "ASSEMBLE error the label does not exist" pc flags)))
+          (op-error 'severe "Error in branch ASSEMBLE no label or register" pc flags)))))
+
+(define make-branchcond-inst
+  (lambda(instruction machine pc flags operations labels)(display 'make-branchcond)
+    (let* ((instname (car instruction))
+           (params (cdr instruction))
+           (mask (car params))
+           (branch (cadr params)))
+      (if (or (label-exp? branch) (register-exp? branch))
+          (let ((brproc (make-primitive-exp branch machine labels))
+                (rcont (get-register machine 'rcont)))
+            (if brproc
+                (lambda ()
+                  (if (eq? (regget flags) mask)
+                      (branch-seq pc rcont brproc)
+                      (advance-pc pc))
+                  (newline)
+                  (display 'rcont->)(display (regget rcont))
+                  (newline)
+                  (display "branch condition pc->")
+                  (display (regget pc)))
+                (op-error 'severe "ASSEMBLE error the label does not exist" pc flags)))
+          (op-error 'severe "Error in branch ASSEMBLE no label or register" pc flags)))))
+
+(define make-continue-inst
+  (lambda(instruction machine pc flags operations labels)(display 'make-continue)
+    (let ((instname (car instruction))
+          (rcont    (get-register machine 'rcont)))
+      (lambda ()
+        (let ((cont (regget rcont)))
+          (if (eq? cont 0)
+              (regset! pc '())
+              (regset! pc cont))
+          (newline)(display 'contpc->)(newline)
+          (display (regget pc))
+          (display '<-contpc)
+          (newline)
+          (regset! rcont 0))))))
+
+(define make-assign-inst
+  (lambda(instruction machine pc flags operations labels)
+    (display 'make-assign)
+    (let* ((instname (car instruction))
+           (params (cdr instruction))
+           (operation (cdr params))
+           (register (get-register machine (car params))))
+      (if (operation-exp? (car operation))
+          (let ((opproc (make-operation operation operations machine labels)))
+            (lambda ()
+              (regset! register (opproc))
+              (newline)(display 'assigned->)
+              (display (regget register))
+              (advance-pc pc)))
+          (op-error 'severe "ASSEMBLE error perform needs operation" pc flags)))))
+
+(define make-push!-inst 
+  (lambda(instruction machine pc flags operations labels)(display 'make-push!)
+    (let* ((instname (car instruction))
+           (stack (get-stack machine))
+           (params (cdr instruction)))
+      (let ((value (eval-expr params operations machine labels)))
+        (if value
+            (lambda ()
+              ((stack-push! stack) (value))
+              (newline)(display 'pushed->)
+              (display ((stack-top stack)))
+              (advance-pc pc))
+            (op-error 'severe "ASSEMBLE error  needs primitioperation" pc flags))))))
+
+(define make-pop-inst 
+  (lambda(instruction machine pc flags operations labels)
+    (display 'make-pop)
+    (let* ((instname (car instruction))
+           (params (cdr instruction))
+           (stack (get-stack machine))
+           (register (get-register machine (car params))))
+      (lambda ()
+        (regset! register ((stack-pop stack)))
+        (newline)(display 'poped->)
+        (display (regget register))
+        (advance-pc pc)))))
+
+
+(define make-perform-inst
+  (lambda(instruction machine pc flags operations labels)
+    (display 'make-perform)
+    (let ((instname (car instruction))
+          (params (cdr instruction)))
+      (if (operation-exp? (car params))
+          (let ((opproc (make-operation params operations machine labels)))
+            (lambda ()
+              (opproc)
+              (advance-pc pc)))
+          (op-error 'severe "ASSEMBLE error perform needs operation" pc flags)))))
+
+(define advance-pc (lambda (pc)
+                     (newline)(display 'pc->)(newline)
+                     (display (cdr (regget pc)))(display '<-pc) (newline)
+                     (regset! pc (cdr (regget pc)))))
+
+(define build-insts-labels (lambda (code genlist)
+                             (if (null? code)
+                                 (genlist '() '())
+                                 (build-insts-labels
+                                  (cdr code)
+                                  (lambda (instructions labels)
+                                    (let ((stmt (car code)))
+                                      (if (symbol? stmt)
+                                          (genlist instructions 
+                                                   (cons (make-label-entry stmt instructions)
+                                                         labels))
+                                          (genlist (cons (make-instruction stmt)
+                                                         instructions) 
+                                                   labels))))))))
+
+(define assemble 
+  (lambda (code machine)
+    (let ((istset ((vector-ref machine 5))))
+      (build-insts-labels code 
+                          (lambda(instructions labels)
+                            (generatecode instructions labels machine))))))
+
+;; make it easier and bind params ('reg bla).... for exec
+
+;; bind also make-primitive in eval-expr
+
+(define eval-expr 
+  (lambda (param operations machine labels)
+    (cond ((operation-exp? (car param))
+           (make-operation param operations machine labels))
+          ((valid-primitive? (car param))
+           (make-primitive-exp (car param) machine labels))
+          (else #f))))
+
+(define make-operation 
+  (lambda (param operations machine labels)    
+    (let ((op (resolve-op (get-op param) operations))
+          (procs (map (lambda(expr) 
+                        (make-primitive-exp expr machine labels))
+                      (get-operands param))))
+      (if op
+          (lambda ()
+            (apply op (map (lambda (p)  (p)) procs)))
+          'error))))
+
+
+
+(define tagged-list? (lambda (in) (and (list? in) (list? (cdr in)))))
+
+(define operation-exp?
+  (lambda(op)
+    (if (tagged-list? op)
+        (eq? 'op (car op))
+        #f)))
+
+(define register-exp?
+  (lambda(exp) 
+    (if (tagged-list? exp)
+        (eq? 'reg (car exp))
+        #f)))
+
+(define label-exp? 
+  (lambda(exp) 
+    (if (tagged-list? exp)
+        (eq? 'label (car exp))
+        #f)))
+
+(define cons-exp?
+  (lambda(exp)
+    (if (tagged-list? exp)
+        (eq? 'cons (car exp))
+        #f)))
+
+(define valid-primitive? 
+  (lambda(exp)
+    (or (label-exp? exp)
+        (register-exp? exp)
+        (cons-exp? exp))))
+
+(define get-op
+  (lambda (params)
+    (let ((operation (car params)))
+      (cadr operation))))
+
+(define get-operands
+  (lambda (params)(cdr params)))
+
+(define resolve-op 
+  (lambda (operation operations)
+    (let ((p (assoc operation operations)))
+      (if p
+          (cadr p)
+          #f))))
+
+
+
+(define get-label
+  (lambda (parm labels)
+    (massoc parm labels)))
+
+(define make-primitive-exp
+  (lambda (expression machine labels)
+    (let ((type (car expression))
+          (parm (cadr expression)))
+      (cond ((eq? type 'reg)
+             (let ((register (get-register machine parm)))
+               (lambda ()
+                 (regget register))))
+            ((eq? type 'cons)
+             (lambda () parm))
+            ((eq? type 'label)
+             (let ((label (get-label parm labels)))
+               (if (not label)
+                   #f
+                   (lambda () (cdr label)))))
+            (else (display "ASSEMBLE invalid primitive expression"))))))
+
+(define toassmblem (copy-list '(main (test (op eq) (reg ax) (reg cx))
+                          (push! (reg ax))
+                          (if (eq (reg ax) (reg dx))
+                              ((push! (op plus) (cons 2) (cons 7))
+                               (pop cx)
+                               (if (eq (reg cx) (cons 7))
+                                   (assign cx (op plus) (reg cx) (cons 8))
+                                   (assign dx (op plus) (reg ax) (reg cx)))
+                               (pop dx))
+                              ((call thissub)
+                               (pop cx)))
+                          (assign renv (op malloc) (cons 200))
+                          (assign dx (op plus) (reg ax) (reg dx))
+                          (branchcond #f (label test))
+                          (branch (label try))
+                          test (move ax (reg dx))
+                          (perform (op mset) (reg renv) (reg envp) (reg rcont))
+                          (assign rcont (op mget) (reg renv) (reg envp))
+                          try  (test (op eq) (reg cx) (reg dx))
+                          (continue)
+                          (proc thisSub
+                                (assign cx (op minus) (cons 8) (cons 9))
+                                (if (eq (reg cx) (cons 7))
+                                    (assign cx (op plus) (reg cx) (cons 8))
+                                    (call thissub))
+                                (push! cx)))))
+
+
+                     
+(define macroass (lambda(source machine)
+                   (assemble-macros source (lambda(in) in))))
+
+(define macro-list
+  (lambda()
+    (list
+     (list 'proc expand-proc)
+     (list 'call expand-call)
+     (list 'if expand-if))))
+
+(define expand-proc
+  (lambda (macro-code)
+    (let ((proc-lab (car macro-code))
+          (proc-code (list-tail macro-code 1)))
+      (assemble-macros
+       (append `((push! rcont)
+                 ,proc-lab)
+               (get-block proc-code)
+               '((pop rcont)
+                 (continue)))
+       (lambda(in) in)))))
+
+(define expand-call
+  (lambda (macro-code)
+    (let ((label (car macro-code))
+          (params (cdr macro-code)))
+      `(branch (label ,label)))))
+
+(define expand-if
+  (lambda (macro-code)
+    (let ((if-label (label-generator 'if))
+          (else-label (label-generator 'else))
+          (end-if (label-generator 'end-if))
+          (if-cond (car macro-code))
+          (if-case (cadr macro-code))
+          (else-case (caddr macro-code)))
+      (assemble-macros
+       (append 
+        `(,if-label (test ,if-cond) 
+                    (branchcond #f ,else-label))
+        (get-block if-case)
+        `((branch ,end-if)
+          ,else-label) 
+        (get-block else-case)
+        `(,end-if))
+       (lambda(in) in)))))
+
+
+
+;; primitive way for mapping think about a registry like for the registers
+
+(define make-expand-macros
+  (lambda (macro-list)
+    (let ((macro-assocs (macro-list)))
+      (lambda(macro-def)
+        (let ((m-proc (massoc (car macro-def) macro-assocs)))
+          (if (and (pair? m-proc) (procedure? (cadr m-proc)))
+              ((cadr m-proc) (cdr macro-def))
+              (display "invalid macro-def")))))))
+
+(define assemble-macros
+  (let ((expand-macros (make-expand-macros macro-list)))
+    (lambda (source k)
+      (if (null? source) 
+          (k '())
+          (assemble-macros (cdr source) 
+                           (lambda(instructions)
+                             (let ((parm (car source)))
+                               (if (and (not (symbol? parm)) (ismacro? (car parm)))
+                                   (k (append (expand-macros parm) instructions))
+                                   (k (cons parm instructions))))))))))
+
+(define get-block
+  (lambda (in)
+    (if (list? (car in))
+        in
+        (list in))))
+
+(define label-generator
+  (let ((counter 0))
+    (lambda(labname)
+      (set! counter (+ 1 counter))       
+      (string->symbol
+       (string-append 
+        (symbol->string labname) 
+        (number->string counter))))))
+
+(define ismacro? 
+  (lambda(exp)
+    (mpair? (assoc exp (macro-list)) )))
+(macroass toassmblem newmachine)
+(inst-execute newmachine (assemble toassmble newmachine))
