@@ -1,6 +1,6 @@
+#lang racket
 ;;make this a module
-(module objective-s mzscheme
-  (provide define-sclass
+(provide define-sclass
            define-sinterface
            send-message
            send-message-by-names
@@ -31,14 +31,14 @@
   (define-syntax (define-sclass sclass-stx)
     (define generateid
       (lambda (template-id . args)
-        (datum->syntax-object template-id
+        (datum->syntax template-id
                               (string->symbol
                                (apply string-append
                                       (map (lambda (x)
                                              (if (string? x)
                                                  x
                                                  (symbol->string
-                                                  (syntax-object->datum  x))))
+                                                  (syntax->datum  x))))
                                            args))))))
     (syntax-case sclass-stx ()       
       ((_ class-name make-obj (constructor) predicate?
@@ -149,4 +149,4 @@
       ((_  first ...)
        (begin
          (call-super-internal (list first ...))))))
-  )
+ 
